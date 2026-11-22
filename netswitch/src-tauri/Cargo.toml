@@ -2,6 +2,7 @@
 name = "netswitch"
 version = "0.1.0"
 description = "Gestionnaire de profils réseau (barre des menus / zone de notification)"
+authors = ["Elon Hayot"]
 edition = "2021"
 
 [build-dependencies]

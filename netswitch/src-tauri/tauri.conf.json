@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "NetSwitch",
   "version": "0.1.0",
-  "identifier": "fr.netswitch.desktop",
+  "identifier": "fr.elonhayot.netswitch",
   "build": {
     "frontendDist": "../ui"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "NetSwitch",
+        "title": "NetSwitch — Elon Hayot",
         "width": 960,
         "height": 660,
         "minWidth": 760,
@@ -25,13 +25,22 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "nsis"],
+    "targets": [
+      "app",
+      "dmg",
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "Elon Hayot",
+    "copyright": "© 2026 Elon Hayot. Tous droits réservés.",
+    "category": "Utility",
+    "shortDescription": "Gestionnaire de profils réseau",
+    "longDescription": "NetSwitch, par Elon Hayot : profils IP/DNS en un clic, multi-IP, détection automatique et scan du réseau."
   }
 }
