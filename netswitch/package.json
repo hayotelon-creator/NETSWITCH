@@ -1,0 +1,13 @@
+{
+  "name": "netswitch",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "tauri": "tauri",
+    "icons": "tauri icon src-tauri/app-icon.png",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

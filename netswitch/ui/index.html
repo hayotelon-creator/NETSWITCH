@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>NetSwitch</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--txt:#e6e8ee;--mut:#8b93a7;--acc:#38bdf8;--ok:#34d399;--err:#f87171}
+  *{box-sizing:border-box}
+  body{margin:0;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--txt);height:100vh;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:18px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{font-size:15px;margin:0;font-weight:650}
+  nav{display:flex;gap:4px}
+  nav button{background:none;border:0;color:var(--mut);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+  nav button.on{background:var(--line);color:var(--txt)}
+  .sp{flex:1}
+  label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);cursor:pointer}
+  main{flex:1;overflow:auto;padding:16px}
+  .tab{display:none}.tab.on{display:block}
+  .cols{display:grid;grid-template-columns:240px 1fr;gap:16px;height:100%}
+  .list{display:flex;flex-direction:column;gap:6px}
+  .item{padding:9px 11px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--panel)}
+  .item.sel{border-color:var(--acc)}
+  .item small{display:block;color:var(--mut)}
+  .item .cur{color:var(--ok)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px 14px}
+  .f{display:flex;flex-direction:column;gap:4px}
+  .f span{color:var(--mut);font-size:12px}
+  input,select{background:var(--bg);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:7px 9px;font:inherit;min-width:0}
+  input:focus,select:focus{outline:none;border-color:var(--acc)}
+  input:disabled{opacity:.4}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .btn{background:var(--line);border:0;color:var(--txt);padding:7px 13px;border-radius:6px;cursor:pointer;font:inherit}
+  .btn.pri{background:var(--acc);color:#04121c;font-weight:600}
+  .btn.dan{color:var(--err)}
+  .btn:disabled{opacity:.5;cursor:default}
+  h3{margin:18px 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut)}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:500;font-size:12px}
+  td.mono,.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4b5263;margin-right:6px}
+  .dot.up{background:var(--ok)}
+  .muted{color:var(--mut)}
+  .empty{color:var(--mut);padding:30px;text-align:center}
+  #toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);padding:9px 16px;border-radius:8px;background:#1f3a2e;color:#bbf7d0;display:none;max-width:80%}
+  #toast.err{background:#3b1d1d;color:#fecaca}
+  .x{background:none;border:0;color:var(--mut);cursor:pointer;font-size:16px}
+  tr.click{cursor:pointer}tr.click:hover{background:#1c2029}
+</style>
+</head>
+<body>
+<header>
+  <h1>NetSwitch</h1>
+  <nav>
+    <button data-t="profiles" class="on">Profils</button>
+    <button data-t="ifaces">Interfaces</button>
+    <button data-t="scan">Scan</button>
+  </nav>
+  <div class="sp"></div>
+  <label class="sw"><input type="checkbox" id="auto"> Détection auto</label>
+</header>
+
+<main>
+  <!-- PROFILS -->
+  <section class="tab on" id="t-profiles">
+    <div class="cols">
+      <div>
+        <div class="list" id="plist"></div>
+        <div class="row" style="margin-top:10px"><button class="btn" id="add">+ Nouveau profil</button></div>
+      </div>
+      <div id="editor"></div>
+    </div>
+  </section>
+
+  <!-- INTERFACES -->
+  <section class="tab" id="t-ifaces">
+    <div class="row" style="margin-bottom:10px"><button class="btn" id="refresh">Rafraîchir</button></div>
+    <div class="card" style="padding:0"><table>
+      <thead><tr><th>Interface</th><th>Matériel</th><th>Adresses IPv4</th><th>MAC</th><th>Mode</th></tr></thead>
+      <tbody id="itable"></tbody>
+    </table></div>
+  </section>
+
+  <!-- SCAN -->
+  <section class="tab" id="t-scan">
+    <div class="row" style="margin-bottom:10px">
+      <select id="siface"></select>
+      <button class="btn pri" id="go">Scanner</button>
+      <span class="muted" id="sinfo"></span>
+    </div>
+    <div class="card" style="padding:0"><table>
+      <thead><tr><th>IP</th><th>MAC</th><th>Ping</th><th></th></tr></thead>
+      <tbody id="stable"><tr><td colspan="4" class="empty">Choisis une interface et lance le scan. Clic sur une ligne = copier l'IP.</td></tr></tbody>
+    </table></div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+let cfg = { profiles: [], auto: false, last_applied: '' };
+let ifaces = [];
+let sel = -1;
+
+function toast(msg, err=false){
+  const t = $('#toast'); t.textContent = msg; t.className = err ? 'err' : ''; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', err ? 7000 : 3000);
+}
+const prefixToMask = p => { const v = p ? (0xffffffff << (32 - p)) >>> 0 : 0; return [24,16,8,0].map(s => (v >>> s) & 255).join('.'); };
+
+// ---------- Onglets ----------
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.id === 't-' + b.dataset.t));
+  if (b.dataset.t !== 'profiles') loadIfaces();
+});
+
+// ---------- Chargement ----------
+async function loadCfg(){ cfg = await invoke('get_config'); $('#auto').checked = cfg.auto; renderProfiles(); }
+async function loadIfaces(){
+  try { ifaces = await invoke('list_interfaces'); } catch(e){ toast(e, true); ifaces = []; }
+  renderIfaces(); renderScanSelect(); if (sel >= 0) renderEditor();
+}
+async function save(){ await invoke('save_config', { cfg }); }
+
+// ---------- Profils ----------
+function renderProfiles(){
+  const l = $('#plist');
+  if (!cfg.profiles.length){ l.innerHTML = '<div class="empty">Aucun profil</div>'; }
+  else l.innerHTML = cfg.profiles.map((p,i) => `
+    <div class="item ${i===sel?'sel':''}" data-i="${i}">
+      ${esc(p.name || 'Sans nom')} ${p.name===cfg.last_applied ? '<span class="cur">●</span>' : ''}
+      <small>${esc(p.iface || '—')} · ${p.dhcp ? 'DHCP' : esc(p.ip || 'IP fixe')}${p.extra?.length ? ' +' + p.extra.length : ''}${p.auto_on_link ? ' · auto' : ''}</small>
+    </div>`).join('');
+  l.querySelectorAll('.item').forEach(el => el.onclick = () => { readEditor(); sel = +el.dataset.i; renderProfiles(); renderEditor(); });
+  renderEditor();
+}
+
+function ifaceOptions(cur){
+  const ids = ifaces.map(i => i.id);
+  if (cur && !ids.includes(cur)) ids.unshift(cur);
+  return ids.map(id => { const i = ifaces.find(x => x.id === id);
+    return `<option value="${esc(id)}" ${id===cur?'selected':''}>${esc(id)}${i ? (i.up ? ' (connecté)' : ' (débranché)') : ' (absente)'}</option>`; }).join('');
+}
+
+function renderEditor(){
+  const ed = $('#editor');
+  const p = cfg.profiles[sel];
+  if (!p){ ed.innerHTML = '<div class="card empty">Sélectionne ou crée un profil.</div>'; return; }
+  ed.innerHTML = `
+  <div class="card">
+    <div class="grid">
+      <label class="f"><span>Nom</span><input id="e-name" value="${esc(p.name)}"></label>
+      <label class="f"><span>Interface</span><select id="e-iface">${ifaceOptions(p.iface)}</select></label>
+      <label class="f"><span>Mode</span><select id="e-mode"><option value="static" ${!p.dhcp?'selected':''}>IP fixe</option><option value="dhcp" ${p.dhcp?'selected':''}>DHCP</option></select></label>
+      <label class="f"><span>Adresse IP</span><input class="mono st" id="e-ip" value="${esc(p.ip)}" placeholder="192.168.1.50"></label>
+      <label class="f"><span>Masque</span><input class="mono st" id="e-mask" value="${esc(p.mask)}" placeholder="255.255.255.0"></label>
+      <label class="f"><span>Passerelle (optionnel)</span><input class="mono st" id="e-gw" value="${esc(p.gateway)}" placeholder="192.168.1.1"></label>
+      <label class="f"><span>DNS 1</span><input class="mono" id="e-dns1" value="${esc(p.dns?.[0])}" placeholder="vide = auto"></label>
+      <label class="f"><span>DNS 2</span><input class="mono" id="e-dns2" value="${esc(p.dns?.[1])}"></label>
+      <div class="f"><span>&nbsp;</span><button class="btn" id="e-fill">Reprendre la config actuelle</button></div>
+    </div>
+
+    <h3>IP supplémentaires sur la même carte</h3>
+    <div id="e-extra"></div>
+    <button class="btn" id="e-addx">+ Ajouter une IP</button>
+
+    <h3>Automatisme</h3>
+    <label class="sw"><input type="checkbox" id="e-auto" ${p.auto_on_link?'checked':''}> Appliquer automatiquement quand cette interface se connecte (câble branché)</label>
+
+    <div class="row" style="margin-top:20px">
+      <button class="btn pri" id="e-apply">Enregistrer et appliquer</button>
+      <button class="btn" id="e-save">Enregistrer</button>
+      <button class="btn" id="e-dup">Dupliquer</button>
+      <div class="sp"></div>
+      <button class="btn dan" id="e-del">Supprimer</button>
+    </div>
+  </div>`;
+  renderExtras(p);
+  const syncMode = () => document.querySelectorAll('.st').forEach(x => x.disabled = $('#e-mode').value === 'dhcp');
+  $('#e-mode').onchange = syncMode; syncMode();
+  $('#e-addx').onclick = () => { readEditor(); p.extra.push({ ip:'', mask:'255.255.255.0' }); renderExtras(p); };
+  $('#e-fill').onclick = () => {
+    const i = ifaces.find(x => x.id === $('#e-iface').value);
+    const a = i?.addrs?.find(a => !a.ip.startsWith('169.254.')) || i?.addrs?.[0];
+    if (!a) return toast("Pas d'adresse IPv4 sur cette interface", true);
+    $('#e-ip').value = a.ip; $('#e-mask').value = prefixToMask(a.prefix);
+  };
+  $('#e-save').onclick = async () => { readEditor(); await save(); renderProfiles(); toast('Enregistré'); };
+  $('#e-apply').onclick = async (ev) => {
+    readEditor(); await save(); renderProfiles();
+    ev.target.disabled = true; ev.target.textContent = 'Application…';
+    try { toast(await invoke('apply_profile', { index: sel })); setTimeout(loadIfaces, 1500); }
+    catch(e){ toast(e, true); }
+    finally { ev.target.disabled = false; ev.target.textContent = 'Enregistrer et appliquer'; }
+  };
+  $('#e-dup').onclick = async () => { readEditor(); const c = structuredClone(p); c.name += ' (copie)'; c.auto_on_link = false; cfg.profiles.push(c); sel = cfg.profiles.length - 1; await save(); renderProfiles(); };
+  $('#e-del').onclick = async () => { cfg.profiles.splice(sel, 1); sel = Math.min(sel, cfg.profiles.length - 1); await save(); renderProfiles(); };
+}
+
+function renderExtras(p){
+  const box = $('#e-extra');
+  box.innerHTML = p.extra.map((x,i) => `
+    <div class="row" style="margin-bottom:6px">
+      <input class="mono xi" data-i="${i}" value="${esc(x.ip)}" placeholder="192.168.2.50" style="width:170px">
+      <input class="mono xm" data-i="${i}" value="${esc(x.mask)}" placeholder="255.255.255.0" style="width:150px">
+      <button class="x" data-i="${i}" title="Retirer">✕</button>
+    </div>`).join('') || '<div class="muted" style="margin-bottom:8px">Aucune. Pratique pour être sur deux sous-réseaux à la fois (ex. console + Dante).</div>';
+  box.querySelectorAll('.x').forEach(b => b.onclick = () => { readEditor(); p.extra.splice(+b.dataset.i, 1); renderExtras(p); });
+}
+
+function readEditor(){
+  const p = cfg.profiles[sel]; if (!p || !$('#e-name')) return;
+  p.name = $('#e-name').value.trim();
+  p.iface = $('#e-iface').value;
+  p.dhcp = $('#e-mode').value === 'dhcp';
+  p.ip = $('#e-ip').value.trim(); p.mask = $('#e-mask').value.trim(); p.gateway = $('#e-gw').value.trim();
+  p.dns = [$('#e-dns1').value.trim(), $('#e-dns2').value.trim()].filter(Boolean);
+  p.extra = [...document.querySelectorAll('.xi')].map(el => ({ ip: el.value.trim(), mask: document.querySelector(`.xm[data-i="${el.dataset.i}"]`).value.trim() }));
+  p.auto_on_link = $('#e-auto').checked;
+}
+
+$('#add').onclick = async () => {
+  readEditor();
+  const def = ifaces.find(i => i.up) || ifaces[0];
+  cfg.profiles.push({ name: 'Nouveau profil', iface: def?.id || '', dhcp: false, ip: '', mask: '255.255.255.0', gateway: '', dns: [], extra: [], auto_on_link: false });
+  sel = cfg.profiles.length - 1; await save(); renderProfiles(); $('#e-name').select();
+};
+
+$('#auto').onchange = async e => { cfg.auto = e.target.checked; await save(); toast(cfg.auto ? 'Détection auto activée' : 'Détection auto désactivée'); };
+
+// ---------- Interfaces ----------
+function renderIfaces(){
+  $('#itable').innerHTML = ifaces.map(i => `
+    <tr><td><span class="dot ${i.up?'up':''}"></span>${esc(i.id)}</td>
+    <td class="muted">${esc(i.device)}</td>
+    <td class="mono">${i.addrs.map(a => esc(a.ip) + '/' + a.prefix).join('<br>') || '<span class="muted">—</span>'}</td>
+    <td class="mono muted">${esc(i.mac)}</td>
+    <td>${i.dhcp === null || i.dhcp === undefined ? '' : (i.dhcp ? 'DHCP' : 'Fixe')}</td></tr>`).join('')
+    || '<tr><td colspan="5" class="empty">Aucune interface</td></tr>';
+}
+$('#refresh').onclick = loadIfaces;
+
+// ---------- Scan ----------
+function renderScanSelect(){
+  const s = $('#siface'), cur = s.value;
+  const withIp = ifaces.filter(i => i.addrs.length);
+  s.innerHTML = withIp.map(i => `<option value="${esc(i.id)}">${esc(i.id)} — ${esc(i.addrs[0].ip)}/${i.addrs[0].prefix}</option>`).join('') || '<option value="">Aucune interface avec IP</option>';
+  if (withIp.some(i => i.id === cur)) s.value = cur;
+}
+$('#go').onclick = async () => {
+  const id = $('#siface').value; if (!id) return;
+  const b = $('#go'); b.disabled = true; b.textContent = 'Scan en cours…'; $('#sinfo').textContent = '';
+  const t0 = Date.now();
+  try {
+    const hosts = await invoke('scan', { iface: id });
+    $('#stable').innerHTML = hosts.map(h => `
+      <tr class="click" data-ip="${esc(h.ip)}"><td class="mono">${esc(h.ip)}</td><td class="mono muted">${esc(h.mac) || '—'}</td>
+      <td>${h.ping ? '<span class="dot up"></span>oui' : '<span class="dot"></span>non (vu en ARP)'}</td>
+      <td>${h.me ? '<b>ce poste</b>' : ''}</td></tr>`).join('');
+    $('#stable').querySelectorAll('tr.click').forEach(r => r.onclick = () => { navigator.clipboard.writeText(r.dataset.ip); toast('IP copiée : ' + r.dataset.ip); });
+    $('#sinfo').textContent = `${hosts.length} appareil(s) · ${((Date.now()-t0)/1000).toFixed(1)} s`;
+  } catch(e){ toast(e, true); }
+  finally { b.disabled = false; b.textContent = 'Scanner'; }
+};
+
+// ---------- Événements venant de l'app ----------
+listen('applied', e => { toast(`Profil « ${e.payload} » appliqué`); loadCfg(); setTimeout(loadIfaces, 1500); });
+listen('error', e => toast(e.payload, true));
+listen('config', loadCfg);
+
+loadCfg().then(loadIfaces);
+</script>
+</body>
+</html>
