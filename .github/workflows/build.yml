@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     working-directory: netswitch
@@ -36,6 +40,10 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: netswitch/src-tauri
+
+      - name: Base des fabricants (OUI)
+        shell: bash
+        run: curl -sSfL -A "Mozilla/5.0" -o src-tauri/manuf.txt https://www.wireshark.org/download/automated/data/manuf || echo "Base OUI indisponible, on continue sans"
 
       - run: npm install
       - run: npx tauri icon src-tauri/app-icon.png
