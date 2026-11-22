@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<title>NetSwitch</title>
+<title>NetSwitch — Elon Hayot</title>
 <style>
   :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--txt:#e6e8ee;--mut:#8b93a7;--acc:#38bdf8;--ok:#34d399;--err:#f87171}
   *{box-sizing:border-box}
@@ -51,7 +51,7 @@
 </head>
 <body>
 <header>
-  <h1>NetSwitch</h1>
+  <h1>NetSwitch <span style="font-weight:400;color:var(--mut);font-size:12px">par Elon Hayot</span></h1>
   <nav>
     <button data-t="profiles" class="on">Profils</button>
     <button data-t="ifaces">Interfaces</button>
@@ -90,8 +90,8 @@
       <span class="muted" id="sinfo"></span>
     </div>
     <div class="card" style="padding:0"><table>
-      <thead><tr><th>IP</th><th>MAC</th><th>Ping</th><th></th></tr></thead>
-      <tbody id="stable"><tr><td colspan="4" class="empty">Choisis une interface et lance le scan. Clic sur une ligne = copier l'IP.</td></tr></tbody>
+      <thead><tr><th>IP</th><th>Nom</th><th>Fabricant</th><th>MAC</th><th>Ping</th><th>Web</th></tr></thead>
+      <tbody id="stable"><tr><td colspan="6" class="empty">Choisis une interface et lance le scan. Clic sur une ligne = copier l'IP. Le scan peut prendre 10 à 30 s.</td></tr></tbody>
     </table></div>
   </section>
 </main>
@@ -260,10 +260,16 @@ $('#go').onclick = async () => {
   try {
     const hosts = await invoke('scan', { iface: id });
     $('#stable').innerHTML = hosts.map(h => `
-      <tr class="click" data-ip="${esc(h.ip)}"><td class="mono">${esc(h.ip)}</td><td class="mono muted">${esc(h.mac) || '—'}</td>
-      <td>${h.ping ? '<span class="dot up"></span>oui' : '<span class="dot"></span>non (vu en ARP)'}</td>
-      <td>${h.me ? '<b>ce poste</b>' : ''}</td></tr>`).join('');
+      <tr class="click" data-ip="${esc(h.ip)}">
+        <td class="mono">${esc(h.ip)}${h.me ? ' <b class="muted">(ce poste)</b>' : ''}</td>
+        <td>${esc(h.name) || '<span class="muted">—</span>'}</td>
+        <td>${esc(h.vendor) || '<span class="muted">inconnu</span>'}</td>
+        <td class="mono muted">${esc(h.mac) || '—'}</td>
+        <td>${h.ping ? `<span class="dot up"></span>${h.latency != null && h.latency > 0 ? (h.latency < 1 ? '&lt;1' : Math.round(h.latency)) + ' ms' : 'oui'}` : '<span class="dot"></span><span class="muted">ARP seul</span>'}</td>
+        <td>${h.web ? `<button class="btn web" data-url="${esc(h.web)}">Ouvrir</button>` : ''}</td>
+      </tr>`).join('');
     $('#stable').querySelectorAll('tr.click').forEach(r => r.onclick = () => { navigator.clipboard.writeText(r.dataset.ip); toast('IP copiée : ' + r.dataset.ip); });
+    $('#stable').querySelectorAll('.web').forEach(b => b.onclick = ev => { ev.stopPropagation(); invoke('open_url', { url: b.dataset.url }).catch(e => toast(e, true)); });
     $('#sinfo').textContent = `${hosts.length} appareil(s) · ${((Date.now()-t0)/1000).toFixed(1)} s`;
   } catch(e){ toast(e, true); }
   finally { b.disabled = false; b.textContent = 'Scanner'; }
