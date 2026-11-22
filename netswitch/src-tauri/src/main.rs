@@ -96,6 +96,11 @@ async fn scan(iface: String) -> Result<Vec<net::Host>, String> {
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    net::open_url(&url)
+}
+
 // ---------- Logique ----------
 
 fn do_apply(app: &AppHandle, index: usize) -> Result<String, String> {
@@ -136,6 +141,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         c
     };
     let menu = Menu::new(app)?;
+    menu.append(&MenuItem::with_id(app, "about", "NetSwitch — par Elon Hayot", false, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
     if cfg.profiles.is_empty() {
         menu.append(&MenuItem::with_id(app, "none", "Aucun profil", false, None::<&str>)?)?;
     }
@@ -222,7 +229,7 @@ fn main() {
             let menu = build_menu(app.handle())?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("NetSwitch")
+                .tooltip("NetSwitch — Elon Hayot")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| {
@@ -270,7 +277,8 @@ fn main() {
             save_config,
             list_interfaces,
             apply_profile,
-            scan
+            scan,
+            open_url
         ])
         .run(tauri::generate_context!())
         .expect("Erreur au lancement de NetSwitch");

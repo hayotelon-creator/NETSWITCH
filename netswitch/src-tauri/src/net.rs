@@ -34,6 +34,107 @@ pub struct Host {
     pub mac: String,
     pub ping: bool,
     pub me: bool,
+    /// Nom réseau (DNS / NetBIOS / Bonjour selon le système)
+    pub name: String,
+    /// Fabricant déduit de l'adresse MAC
+    pub vendor: String,
+    /// Temps de réponse du ping en ms
+    pub latency: Option<f32>,
+    /// URL de l'interface web si le port 80 ou 443 répond
+    pub web: Option<String>,
+}
+
+// ---------- Base des fabricants (OUI) ----------
+
+static OUI_DATA: &str = include_str!(concat!(env!("OUT_DIR"), "/oui.txt"));
+
+fn oui_map() -> &'static HashMap<&'static str, &'static str> {
+    static MAP: std::sync::OnceLock<HashMap<&'static str, &'static str>> = std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        OUI_DATA
+            .lines()
+            .filter_map(|l| l.split_once('\t'))
+            .collect()
+    })
+}
+
+pub fn vendor_of(mac: &str) -> String {
+    let hex: String = mac.chars().filter(|c| c.is_ascii_hexdigit()).collect::<String>().to_uppercase();
+    if hex.len() < 6 {
+        return String::new();
+    }
+    if let Some(v) = oui_map().get(&hex[..6]) {
+        return v.to_string();
+    }
+    // Bit "administré localement" : adresse MAC aléatoire (téléphones, PC en mode privé…)
+    if let Ok(b) = u8::from_str_radix(&hex[..2], 16) {
+        if b & 0x02 != 0 {
+            return "MAC aléatoire (appareil en mode privé)".into();
+        }
+    }
+    String::new()
+}
+
+/// Extrait le temps de réponse d'une sortie ping ("time=1.23 ms", "temps<1ms", "Zeit=4ms"…)
+fn parse_latency(out: &str) -> Option<f32> {
+    for line in out.lines() {
+        if !line.to_lowercase().contains("ttl=") {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut search = 0;
+        while let Some(rel) = line[search..].find("ms") {
+            let pos = search + rel;
+            let mut end = pos;
+            while end > 0 && bytes[end - 1] == b' ' {
+                end -= 1;
+            }
+            let mut start = end;
+            while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.' || bytes[start - 1] == b',') {
+                start -= 1;
+            }
+            if start < end && start > 0 && (bytes[start - 1] == b'=' || bytes[start - 1] == b'<') {
+                if let Ok(v) = line[start..end].replace(',', ".").parse::<f32>() {
+                    return Some(if bytes[start - 1] == b'<' { v.min(1.0) * 0.5 } else { v });
+                }
+            }
+            search = pos + 2;
+        }
+    }
+    None
+}
+
+fn hostname_of(ip: Ipv4Addr) -> String {
+    match dns_lookup::lookup_addr(&std::net::IpAddr::V4(ip)) {
+        Ok(n) if n != ip.to_string() => n.trim_end_matches('.').to_string(),
+        _ => String::new(),
+    }
+}
+
+fn web_of(ip: Ipv4Addr) -> Option<String> {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    for (port, scheme) in [(80u16, "http"), (443, "https")] {
+        let addr = SocketAddr::from((ip, port));
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
+            return Some(format!("{scheme}://{ip}"));
+        }
+    }
+    None
+}
+
+/// Ouvre une URL dans le navigateur par défaut.
+pub fn open_url(url: &str) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("URL refusée".into());
+    }
+    #[cfg(target_os = "macos")]
+    let r = cmd("/usr/bin/open").arg(url).spawn();
+    #[cfg(windows)]
+    let r = cmd("explorer").arg(url).spawn();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let r = cmd("xdg-open").arg(url).spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
 }
 
 // ---------- Utilitaires ----------
@@ -386,23 +487,20 @@ pub fn apply(_p: &Profile) -> Result<(), String> {
 
 // ---------- Scan (commun) ----------
 
-fn ping(ip: Ipv4Addr) -> bool {
+/// Renvoie Some(latence) si l'hôte répond (latence inconnue = 0).
+fn ping(ip: Ipv4Addr) -> Option<f32> {
     let target = ip.to_string();
     #[cfg(windows)]
-    {
-        // "TTL=" n'apparaît que si l'hôte a vraiment répondu
-        run(cmd("ping").args(["-n", "1", "-w", "500", &target]))
-            .map(|o| o.contains("TTL="))
-            .unwrap_or(false)
-    }
+    let out = cmd("ping").args(["-n", "1", "-w", "500", &target]).output().ok()?;
     #[cfg(not(windows))]
-    {
-        cmd("/sbin/ping")
-            .args(["-c", "1", "-W", "500", &target])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+    let out = cmd("/sbin/ping").args(["-c", "1", "-W", "500", &target]).output().ok()?;
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    // "TTL=" n'apparaît que si l'hôte a vraiment répondu
+    if !text.to_lowercase().contains("ttl=") {
+        return None;
     }
+    Some(parse_latency(&text).unwrap_or(0.0))
 }
 
 fn arp_table() -> HashMap<Ipv4Addr, String> {
@@ -456,39 +554,71 @@ pub fn scan(iface: &str) -> Result<Vec<Host>, String> {
     };
 
     let alive = Mutex::new(Vec::new());
-    let idx = AtomicUsize::new(0);
-    std::thread::scope(|s| {
-        for _ in 0..64 {
-            s.spawn(|| loop {
-                let i = idx.fetch_add(1, Ordering::SeqCst);
-                if i >= targets.len() {
-                    break;
-                }
-                if ping(targets[i]) {
-                    alive.lock().unwrap().push(targets[i]);
-                }
-            });
+    parallel(&targets, |ip| {
+        if let Some(lat) = ping(ip) {
+            alive.lock().unwrap().push((ip, lat));
         }
     });
 
     let arp = arp_table();
     let broadcast = net | !mask;
+    let blank = |ip: Ipv4Addr, mac: String, ping: bool, latency: Option<f32>, me: bool| Host {
+        ip: ip.to_string(),
+        vendor: vendor_of(&mac),
+        mac,
+        ping,
+        me,
+        name: String::new(),
+        latency,
+        web: None,
+    };
     let mut hosts: HashMap<Ipv4Addr, Host> = HashMap::new();
-    for ip in alive.into_inner().unwrap() {
-        hosts.insert(ip, Host { ip: ip.to_string(), mac: arp.get(&ip).cloned().unwrap_or_default(), ping: true, me: false });
+    for (ip, lat) in alive.into_inner().unwrap() {
+        hosts.insert(ip, blank(ip, arp.get(&ip).cloned().unwrap_or_default(), true, Some(lat), false));
     }
     // Appareils qui ne répondent pas au ping mais sont dans la table ARP
     for (ip, mac) in &arp {
         let v = u32::from(*ip);
         if v & mask == net && v != net && v != broadcast && *ip != me {
-            hosts.entry(*ip).or_insert(Host { ip: ip.to_string(), mac: mac.clone(), ping: false, me: false });
+            hosts.entry(*ip).or_insert_with(|| blank(*ip, mac.clone(), false, None, false));
         }
     }
-    hosts.insert(me, Host { ip: me.to_string(), mac: it.mac.clone(), ping: true, me: true });
+    hosts.insert(me, blank(me, it.mac.clone(), true, None, true));
+
+    // Noms et interfaces web, en parallèle
+    let found: Vec<Ipv4Addr> = hosts.keys().copied().collect();
+    let extra = Mutex::new(HashMap::new());
+    parallel(&found, |ip| {
+        let name = hostname_of(ip);
+        let web = web_of(ip);
+        extra.lock().unwrap().insert(ip, (name, web));
+    });
+    for (ip, (name, web)) in extra.into_inner().unwrap() {
+        if let Some(h) = hosts.get_mut(&ip) {
+            h.name = name;
+            h.web = web;
+        }
+    }
 
     let mut v: Vec<Host> = hosts.into_values().collect();
     v.sort_by_key(|h| h.ip.parse::<Ipv4Addr>().map(u32::from).unwrap_or(0));
     Ok(v)
+}
+
+/// Exécute `f` sur chaque IP avec 64 tâches en parallèle.
+fn parallel<F: Fn(Ipv4Addr) + Sync>(items: &[Ipv4Addr], f: F) {
+    let idx = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..64.min(items.len().max(1)) {
+            s.spawn(|| loop {
+                let i = idx.fetch_add(1, Ordering::SeqCst);
+                if i >= items.len() {
+                    break;
+                }
+                f(items[i]);
+            });
+        }
+    });
 }
 
 #[cfg(test)]
@@ -502,5 +632,8 @@ mod tests {
         assert_eq!(prefix_to_mask(22), "255.255.252.0");
         assert_eq!(norm_mac("0:1c:b3:a:ff:1").unwrap(), "00:1c:b3:0a:ff:01");
         assert_eq!(norm_mac("AA-BB-CC-DD-EE-FF").unwrap(), "aa:bb:cc:dd:ee:ff");
+        assert_eq!(parse_latency("64 bytes from 1.2.3.4: icmp_seq=0 ttl=64 time=1.234 ms"), Some(1.234));
+        assert_eq!(parse_latency("Réponse de 1.2.3.4 : octets=32 temps=12 ms TTL=64"), Some(12.0));
+        assert_eq!(parse_latency("Reply from 1.2.3.4: bytes=32 time<1ms TTL=128"), Some(0.5));
     }
 }
