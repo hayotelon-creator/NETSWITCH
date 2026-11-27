@@ -47,6 +47,14 @@
   #toast.err{background:#3b1d1d;color:#fecaca}
   .x{background:none;border:0;color:var(--mut);cursor:pointer;font-size:16px}
   tr.click{cursor:pointer}tr.click:hover{background:#1c2029}
+  .tg{display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:var(--mut);font-size:12px;user-select:none}
+  .tg input{display:none}
+  .tg i{position:relative;width:34px;height:18px;border-radius:9px;background:var(--line);transition:.2s}
+  .tg i::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--txt);transition:.2s}
+  .tg input:checked + i{background:var(--acc)}
+  .tg input:checked + i::after{left:18px}
+  .tg span.on{color:var(--txt);font-weight:600}
+  .tg.busy{opacity:.5;pointer-events:none}
 </style>
 </head>
 <body>
@@ -241,10 +249,19 @@ function renderIfaces(){
     <td class="muted">${esc(i.device)}</td>
     <td class="mono">${i.addrs.map(a => esc(a.ip) + '/' + a.prefix).join('<br>') || '<span class="muted">—</span>'}</td>
     <td class="mono muted">${esc(i.mac)}</td>
-    <td>${i.dhcp === null || i.dhcp === undefined ? '' : (i.dhcp ? 'DHCP' : 'Fixe')}</td></tr>`).join('')
+    <td>${i.dhcp === null || i.dhcp === undefined ? '' : `<label class="tg"><span class="${i.dhcp ? '' : 'on'}">Fixe</span><input type="checkbox" class="mode" data-id="${esc(i.id)}" ${i.dhcp ? 'checked' : ''}><i></i><span class="${i.dhcp ? 'on' : ''}">DHCP</span></label>`}</td></tr>`).join('')
     || '<tr><td colspan="5" class="empty">Aucune interface</td></tr>';
 }
 $('#refresh').onclick = loadIfaces;
+$('#itable').addEventListener('change', async e => {
+  const cb = e.target; if (!cb.classList.contains('mode')) return;
+  const dhcp = cb.checked, lab = cb.closest('.tg');
+  lab.classList.add('busy');
+  toast(`${cb.dataset.id} : passage en ${dhcp ? 'DHCP' : 'IP fixe'}…`);
+  try { await invoke('set_mode', { iface: cb.dataset.id, dhcp }); toast(`${cb.dataset.id} est en ${dhcp ? 'DHCP' : 'IP fixe'}`); }
+  catch(err){ cb.checked = !dhcp; toast(err, true); }
+  finally { lab.classList.remove('busy'); setTimeout(loadIfaces, 2000); }
+});
 
 // ---------- Scan ----------
 function renderScanSelect(){
