@@ -97,6 +97,13 @@ async fn scan(iface: String) -> Result<Vec<net::Host>, String> {
 }
 
 #[tauri::command]
+async fn set_mode(iface: String, dhcp: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || net::set_mode(&iface, dhcp))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     net::open_url(&url)
 }
@@ -278,7 +285,8 @@ fn main() {
             list_interfaces,
             apply_profile,
             scan,
-            open_url
+            open_url,
+            set_mode
         ])
         .run(tauri::generate_context!())
         .expect("Erreur au lancement de NetSwitch");

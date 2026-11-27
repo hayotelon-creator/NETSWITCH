@@ -277,6 +277,13 @@ pub fn list_interfaces() -> Result<Vec<Iface>, String> {
             if !has_status {
                 it.up = !it.addrs.is_empty();
             }
+            if let Ok(gi) = run(cmd("/usr/sbin/networksetup").arg("-getinfo").arg(&it.id)) {
+                if gi.contains("DHCP Configuration") {
+                    it.dhcp = Some(true);
+                } else if gi.contains("Manual Configuration") {
+                    it.dhcp = Some(false);
+                }
+            }
             res.push(it);
         } else if l.starts_with('(') {
             // "(1) Nom du service" ou "(*) Service désactivé"
@@ -340,6 +347,48 @@ pub fn apply(p: &Profile) -> Result<(), String> {
         Err(e) if e.contains("-128") => Err("Annulé (mot de passe non saisi)".into()),
         Err(e) => Err(e),
     }
+}
+
+/// Bascule une carte en DHCP, ou fige sa configuration actuelle en IP fixe.
+#[cfg(target_os = "macos")]
+pub fn set_mode(iface: &str, dhcp: bool) -> Result<(), String> {
+    if dhcp {
+        return apply(&Profile { iface: iface.to_string(), dhcp: true, ..Default::default() });
+    }
+    let it = find_iface(iface)?;
+    let gi = run(cmd("/usr/sbin/networksetup").arg("-getinfo").arg(iface))?;
+    let field = |k: &str| {
+        gi.lines()
+            .find_map(|l| l.strip_prefix(k))
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty() && v != "none")
+    };
+    let ip = field("IP address:").ok_or_else(|| "Pas d'IP à figer : la carte n'a pas d'adresse".to_string())?;
+    if ip.starts_with("169.254.") {
+        return Err("Pas d'IP à figer (adresse automatique 169.254)".into());
+    }
+    let mask = field("Subnet mask:").unwrap_or_else(|| "255.255.255.0".into());
+    let gateway = field("Router:").unwrap_or_default();
+    let mut dns: Vec<String> = run(cmd("/usr/sbin/networksetup").arg("-getdnsservers").arg(iface))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().parse::<Ipv4Addr>().ok())
+        .map(|i| i.to_string())
+        .collect();
+    if dns.is_empty() {
+        if let Ok(d) = run(cmd("/usr/sbin/ipconfig").arg("getoption").arg(&it.device).arg("domain_name_server")) {
+            if let Ok(i) = d.trim().parse::<Ipv4Addr>() {
+                dns.push(i.to_string());
+            }
+        }
+    }
+    let extra = it
+        .addrs
+        .iter()
+        .skip(1)
+        .map(|a| crate::Extra { ip: a.ip.clone(), mask: prefix_to_mask(a.prefix) })
+        .collect();
+    apply(&Profile { iface: iface.to_string(), dhcp: false, ip, mask, gateway, dns, extra, ..Default::default() })
 }
 
 // ---------- Windows ----------
@@ -473,7 +522,42 @@ pub fn apply(p: &Profile) -> Result<(), String> {
     ps(&sc.join("\n")).map(|_| ())
 }
 
+/// Bascule une carte en DHCP, ou fige sa configuration actuelle en IP fixe.
+#[cfg(windows)]
+pub fn set_mode(iface: &str, dhcp: bool) -> Result<(), String> {
+    if dhcp {
+        return apply(&Profile { iface: iface.to_string(), dhcp: true, ..Default::default() });
+    }
+    find_iface(iface)?;
+    let script = format!(
+        r#"
+$a = {a}
+$ips = @(Get-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {{ $_.IPAddress -notlike '169.254.*' }})
+if ($ips.Count -eq 0) {{ throw "Pas d'IP à figer : la carte n'a pas d'adresse valide" }}
+$gw = (Get-NetRoute -InterfaceAlias $a -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop
+$dns = @((Get-DnsClientServerAddress -InterfaceAlias $a -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+Set-NetIPInterface -InterfaceAlias $a -AddressFamily IPv4 -Dhcp Disabled
+Get-NetRoute -InterfaceAlias $a -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+Get-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+$first = $true
+foreach ($x in $ips) {{
+  if ($first -and $gw -and $gw -ne '0.0.0.0') {{ New-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -IPAddress $x.IPAddress -PrefixLength $x.PrefixLength -DefaultGateway $gw | Out-Null }}
+  else {{ New-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -IPAddress $x.IPAddress -PrefixLength $x.PrefixLength | Out-Null }}
+  $first = $false
+}}
+if ($dns.Count -gt 0) {{ Set-DnsClientServerAddress -InterfaceAlias $a -ServerAddresses $dns }}
+"#,
+        a = psq(iface)
+    );
+    ps(&script).map(|_| ())
+}
+
 // ---------- Autres systèmes (pour que ça compile partout) ----------
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn set_mode(_iface: &str, _dhcp: bool) -> Result<(), String> {
+    Err("Système non pris en charge".into())
+}
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn list_interfaces() -> Result<Vec<Iface>, String> {
